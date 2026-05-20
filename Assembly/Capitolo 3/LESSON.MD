@@ -1,203 +1,188 @@
-# Capitolo 3: Gestione del Flusso di Controllo in ARM Assembly
+# Capitolo 3: Gestione del Flusso di Controllo e Sottoprogrammi
 
-Gli argomenti coperti in questo capitolo si concentrano sulla gestione del flusso di controllo e sulla traduzione dei classici costrutti di programmazione di alto livello (C, Java, Python) in linguaggio Assembly ARM. Scrivere codice Assembly pulito richiede di comprendere come il processore valuta i dati e salta tra i blocchi istruzione.
-
----
-
-## 3.1 I Flag di Condizione e il Registro CPSR
-In una CPU, per prendere decisioni (come un `if`), bisogna prima poter "giudicare" un risultato. L'ALU (Arithmetic Logic Unit) esegue i calcoli e imposta delle **flag di condizione**, dei singoli bit che registrano l'esito dell'operazione. Queste flag risiedono all'interno di un registro speciale chiamato **CPSR** (*Current Program Status Register*).
-
-Le quattro flag fondamentali nel CPSR sono:
-- **N (Negative)**: Viene impostata a `1` se il risultato matematico dell'ultima operazione è stato negativo (tecnicamente, se il bit più significativo, il MSB, è `1`).
-- **Z (Zero)**: Viene impostata a `1` se il risultato dell'operazione è *esattamente zero*. Questa è la flag più usata per verificare se due numeri sono uguali (perché $A - B = 0$ significa che $A == B$).
-- **C (Carry / Riporto)**: Viene impostata a `1` se un'addizione ha generato un riporto (es. sommando numeri molto grandi senza segno), oppure indica l'assenza di un "prestito" in una sottrazione.
-- **V (Overflow)**: Segnala un errore matematico in operazioni con segno (es. sommi due numeri positivi immensi e ottieni un falso risultato che sembra negativo).
-
-### Aggiornamento delle Flag: Le istruzioni di Confronto
-In ARM, per impostazione predefinita, le istruzioni normali (`ADD`, `SUB`) **non** aggiornano i flag del CPSR. Per forzare un'istruzione matematica o logica ad aggiornare le flag, bisogna aggiungere il suffisso `S` all'istruzione (es. `ADDS`, `SUBS`, `MOVS`).
-
-Tuttavia, molto spesso desideriamo testare i dati e prendere decisioni **senza modificarli**. A questo scopo, ARM fornisce un set di istruzioni di test/confronto dedicate che aggiornano fedelmente le flag CPSR e poi scartano immediatamente il risultato del calcolo, senza intaccare i registri originali. Le principali sono:
-
-- **`CMP` (Compare - Confronta)**: Effettua matematicamente una **sottrazione** ($Op1 - Op2$). È di gran lunga la più comune e si presta benissimo per i tipici branch relazionali `if (A > B)` o `if (A == B)`.
-  ```assembly
-  CMP R1, R2   @ Sottrae R2 da R1. Se R1 == R2, la flag Zero (Z) diventa 1.
-  ```
-- **`CMN` (Compare Negative - Confronta Negativo)**: Agisce come la CMP, ma elabora internamente un'**addizione** ($Op1 + Op2$). Torna molto utile se occorre avviare valutazioni invertite, confrontando un registro con l'inverso dell'altro, oppure per verificare se due numeri sommati si elidono e determinano uno zero.
-  ```assembly
-  CMN R1, R2   @ Somma R1 e R2. Calcola le flag come se si testasse R1 - (-R2).
-  ```
-- **`TST` (Test)**: Esegue un'operazione logica **AND** bit a bit ($Op1 \ \& \ Op2$). Viene impiegata massicciamente per operazioni di *bitmasking*, per appurare individualmente se specifici bit dentro un registro sono "accesi" a `1` o "spenti" a `0`.
-  ```assembly
-  TST R1, #1   @ Mette in AND i bit, isolando solo il bit in posizione 0 per scoprire se R1 è dispari.
-  ```
-- **`TEQ` (Test Equivalence - Testa Equivalenza)**: Applica un operatore logico **XOR** (OR Esclusivo, $Op1 \ \oplus \ Op2$). È utilissima per vagliare se due valori sono identici bit per bit; al contrario della CMP, che in quanto sottrazione può scatenare le flag Carry e Overflow, la TEQ tocca soltanto le flag Negative e Zero, fornendo un paragone d'identità "sicuro" tra intere sequenze bitwise.
-  ```assembly
-  TEQ R1, R2   @ Esegue XOR logico su R1 e R2. Se sono perfettamente identici, setta Z = 1.
-  ```
+Benvenuto nel terzo capitolo del tuo percorso verso la maestria in Assembly ARM. Finora abbiamo scritto codice "lineare": istruzioni eseguite una dopo l'altra senza sosta. I linguaggi di alto livello, tuttavia, traggono la loro potenza decisionale dai costrutti di controllo (come **If-Else**, **For/While**) e dalla modularità delle **Funzioni**.
+In Assembly, non esistono costrutti semantici pre-fabbricati superiori; saremo noi a tradurli pezzo per pezzo, dominando esplicitamente i registri di stato, i confronti chimici e le istruzioni di Salto (Branching).
 
 ---
 
-## 3.2 Istruzioni di Salto (Branching)
-Con i flag pronti nel CPSR, la CPU ha bisogno di poter deviare il proprio flusso logico di esecuzione. Normalmente, l'elaboratore esegue le istruzioni in rigida sequenza, incrementando automaticamente il Program Counter (`PC` oppure registro `R15`) per puntare all'istruzione successiva. Le istruzioni di salto forzano una modifica diretta del `PC`, permettendo di rompere la sequenza lineare e riprendere l'esecuzione da un'altra parte del programma.
+## 3.1 Un Giudice Silenzioso: Il Registro CPSR e i Flag
 
-L'architettura ARM offre tre istruzioni fondamentali per padroneggiare i salti:
+Per effettuare una scelta (es. `se x > y allora...`), la CPU deve prima compiere un test matematico. L'hardware adibito non formula riflessioni verbali, ma restituisce la diagnosi di questo test alterando dei bit speciali chiamati **Flag di Condizione**. 
+Tali marker risiedono stabilmente nel **CPSR** (*Current Program Status Register*), il "libro mastro" delle operazioni in corso.
 
-1. **`B` (Branch)**: È l'istruzione di salto base. Viene utilizzata per saltare verso un'etichetta (`label`) specifica all'interno del codice. È concettualmente identico al `goto` nei linguaggi di alto livello e non tiene memoria del punto da cui si è appena saltati.
-   ```assembly
-   B loop_start    @ Salto incondizionato: la CPU smette di scorrere linearmente e salta a 'loop_start'.
-   ```
+Le quattro Flag fondamentali manipolate dall'ALU (Arithmetic Logic Unit) sono:
+*   **Z (Zero):** Si accende (`1`) se l'ultimo risultato del calcolo è stato matematicamente **0**. (Esempio: 5-5 = 0. Se è 0, le due variabili testate sono palesemente uguali!).
+*   **N (Negative):** Si accende (`1`) se il risultato è strettamente negativo (ovvero se il bit più significativo MSB della Word è impostato a 1).
+*   **C (Carry):** Si accende (`1`) quando c'è un riporto in un'addizione che supera il confine dei 32 bit, o un mancato "prestito" in una sottrazione unsigned.
+*   **V (Overflow):** Si accende (`1`) se un calcolo con numeri "Signed" trancia i limiti, sfalsando il bit del segno (es. sommo due immensi numeri positivi uscendo dai margini logici ed il computer li interpreta come negativi).
 
-2. **`BL` (Branch and Link)**: Questo salto costituisce il pilastro per l'implementazione di **funzioni** e **subroutine** modularizzate. Oltre a deviare il flusso del PC (esattamente come l'istruzione `B`), la `BL` porta a termine un compito essenziale: prima di saltare, salva l'indirizzo dell'istruzione successiva (ovvero l'indirizzo di "ritorno") nel **registro LR (Link Register - R14)**. In questo modo, la funzione chiamata saprà dove proseguire il lavoro una volta completata.
-   ```assembly
-   BL calcola_somma  @ Salta temporaneamente all'etichetta calcola_somma.
-   ```
-
-3. **`BX` (Branch and Exchange)**: Differisce radicalmente dalle altre due. Invece di usare un'etichetta `label`, questa istruzione effettua un salto dinamico usando un *registro*. Oltre al salto, istruisce la CPU a uno "scambio" (Exchange) di architettura (passando tra la modalità ARM a 32 bit e quella Thumb a 16 bit se richiesto). È universalmente usata alla fine di un frammento per ritornare alla funzione chiamante avvalendosi del Link Register:
-   ```assembly
-   BX LR           @ Termina la subroutine e riprendi l'esecuzione dall'indirizzo linkato in R14.
-   ```
-
-### Salti Condizionati (Conditional Branching)
-La vera forza nei controlli logici emerge dal fatto che tutte le istruzioni di Branch supportano l'esecuzione **condizionale**, associando l'operazione allo stato dei flag (Z, N, C, V) presenti nel **CPSR**.
-Aggiungendo un suffisso logico, il processore esegue il salto *solo se* la flag obbedisce alla condizione; in caso contrario l'istruzione di salto viene "ignorata" ed il processore prosegue in sequenza.
-
-Ecco i suffissi più comuni che traducono i confronti standard:
-- **Uguaglianza e Disuguaglianza**: 
-  - `BEQ` (Branch if Equal): Salta se la flag Zero è accesa (`Z == 1`).
-  - `BNE` (Branch if Not Equal): Salta se la flag Zero è spenta (`Z == 0`).
-- **Istruzioni con Segno (Signed)** (usate per le abituali variabili intere `int`):
-  - `BGT` (Branch if Greater Than): Maggiore stretto (es. +5 > -2).
-  - `BGE` (Branch if Greater or Equal): Maggiore o uguale.
-  - `BLT` (Branch if Less Than): Minore stretto.
-  - `BLE` (Branch if Less or Equal): Minore o uguale.
-- **Confronti Numerici Senza Segno (Unsigned)**:
-  - `BHI` (Branch if Higher): L'equivalente del Maggiore per valori senza segno `unsigned`.
-  - `BLS` (Branch if Lower or Same): L'equivalente del Minore o uguale.
+> **Regola d'Oro del Test (Il suffisso `S`):**
+> Le normali istruzioni (`ADD`, `SUB`) **non** aggiornano autonomamente il CPSR! Per obbligarle a scriverne il resoconto accendendone le Flag si DEVE apporre il magico suffisso `S`. (Esempio: `ADDS`, `SUBS`). 
 
 ---
 
-## 3.3 Traduzione dei Costrutti di Programmazione
+## 3.2 L'Istruzione di Confronto Assoluta: `CMP`
 
-### 3.3.1 Il Costrutto If / If-Else
-La logica più efficiente e comune in Assembly per tradurre un `if` è **"ragionare per contrari"**. In un linguaggio C, scriveremmo "Se condizione vera, fai blocco_if". In Assembly scriveremo: *"Valuta la condizione. Se **NON** si è avverata, salta via l'if"*.
+Sovente, noi vogliamo unicamente *verificare* lo scarto fra due registri, **senza manomettere o sovrascrivere** minimamente il loro contenuto con una stima.
 
-**Esempio C:**
+Per questo interviene `CMP` (Compare - Confronta). L'istruzione `CMP` attua internamente una sottrazione invisibile fra il Primo Operando ed il Secondo (Operando1 - Operando2), si occupa puntualmente di **aggiornare rigorosamente i Flag** su base della differenza, per poi procedere gettando alle fiamme l'output! I valori in entrata rimarranno perciò illesi, offrendovi al tempo stesso l'accensione utile del Flag nel CPSR pronto per l'indagine condizionale.
+
+```assembly
+@ Equivalente C:  if (R1 == R2)
+MOV R1, #10
+MOV R2, #10
+
+CMP R1, R2      @ Il core simulerà: 10 - 10 = 0.
+                @ Essendo zero il risultato... BAM! 
+                @ Il Flag Z (Zero) si imposta ad 1. I registri R1 ed R2 restano intatti a 10.
+```
+
+---
+
+## 3.3 Saltar le recinzioni: Branching Base in ARM (`B`) 
+
+Appurato come si attivano i segnali sul CPSR, occorre fornire al sistema il comando adibito affinché intercetti tale logica alterando a piacimento il susseguirsi istruzionale.
+In ARM il balzo nel codice si attua prevaricando il *Program Counter (`R15 – PC`)* ricorrendo primariamente alle istruzioni `Branch (B)`.
+
+### 1) Salto Incondizionato (`B`)
+Il `B` liscio equivale al caro vecchio (e disprezzato) `GOTO` dei primi linguaggi. Permette un dirottamento forzato verso un'Etichetta in modo istantaneo ed incodizionato, senza ascoltare alcun Flag nel CPSR.
+
+```assembly
+_start:
+    MOV R0, #1
+    B mia_destinazione   @ Salto immediato scavalcando il MOV #2
+    MOV R0, #2           @ <-- Questo codice non verrà MAI eseguito!
+
+mia_destinazione:
+    MOV R0, #3           @ L'azione atterra qui e il PC prosegue.
+```
+
+### 2) Salti Condizionati (Il suffisso logico)
+
+Ecco svelata la magia dell'`if`! Un balzo `B` può essere subordinato aggiungendo le desinenze di test. Il salto accadrà **SOLO E SOLTANTO SE** i Flag dentro al CPSR collimano col resoconto desiderato, altrimenti lo rimpiazzerà procedendo inesorabilmente giù alla riga attigua.
+
+| Istruzione | Condizione Logica | Stato Flag Verificato | Significato C++ / Algoritmo |
+| :--- | :--- | :--- | :--- |
+| **`BEQ`** | Branch if EQual | Z = 1 | `if (A == B)` |
+| **`BNE`** | Branch if Not Equal | Z = 0 | `if (A != B)` |
+| **`BGT`** | Branch Greater Than | Z = 0, N = V | `if (A > B)` |
+| **`BGE`** | Branch Greater or Equal| N = V | `if (A >= B)` |
+| **`BLT`** | Branch Less Than | N != V | `if (A < B)` |
+| **`BLE`** | Branch Less or Equal | Z = 1 OR N != V | `if (A <= B)` |
+
+*(L'elenco si riferisce in special modo ai test generati tra numeri CON Segno)*.
+
+### 3) L'Esecuzione Condizionale a livello di Istruzione (Non solo Salti!)
+I linguaggi tradizionali permettono di "condizionare" solo blocchi interi via *if*. La formidabile architettura ARM, invece, ti dona l'**Esecuzione Condizionale Globale**.
+I suffissi temporali di confronto elencati in tabella (`EQ`, `NE`, `GT`, `LT`, etc.) non sono affatto relegati all'uso limitativo sui Branch (`B`), ma **possono essere applicati a pressoché quasi tutte le istruzioni base registrali (matematiche e logiche)** come `ADD`, `SUB`, `MUL`, `MOV` o `LDR`!
+
+Combinando il test di una riga superiore, tu potrai sommare, assegnare o immagazzinare valori *solo se* la condizione viene rispettata, risparmiando salti viscerali continui ed incrementando notevolmente le performance per le selezioni a passo singolo.
+
+```assembly
+CMP R1, R2       @ R1 e R2 sono equivalenti?  [Genera Zero Flag: Z=1]
+
+@ Se Z=1 (quindi EQ), esegui il MOV. Se Z=0, Ignorala come non fosse mai esistita!
+MOVEQ R0, #10    @ Corrisponde a: if(R1 == R2) { R0 = 10; }
+
+@ Lo stesso vale per procedure Aritmetiche!
+ADDGT R3, R3, #1 @ Aggiungi a R3 + 1, SOLO e SOLTANTO SE (Greater Than) R1 > R2.
+```
+
+---
+
+## 3.4 Tradurre alla Scrivania: If-Else Layout
+
+Assemblare un blocco di selezione richiede pianificazione visiva. Dovremo ragionare spingendo l'Architettura verso la logica avversa scartante: un ramo (tipicamente quello negativo) sarà saltato fisicamente, se non dovesse realizzarsi, costringendoci perfino a usare balzi suppletivi per fuggire al completamento dal blocco "concorrente"!
+
+### Traduzione classica
 ```c
-if(x == y) {
-    x = 10;
+if (R1 >= R2) {
+    R0 = 10;
 } else {
-    y = 5;
+    R0 = 20;
 }
 ```
-**Traduzione in ARM:**
+
 ```assembly
-    CMP R1, R2        @ Confronta x e y
-    BNE else_block    @ Se NON sono uguali, salta il blocco If e vai su Else
-
-    MOV R1, #10       @ Blocco IF.
-    B end_if          @ Salta alla fine per non eseguire anche l'Else.
-
+    CMP R1, R2         @ Test della condizione 
+    BLT else_block     @ ATTENZIONE: Inverto la condizione per comodità! Se R1 < R2 (Less Than), balzo direttamente giù al ramo ELSE!
+    
+    @ --- RAMO IF --- (eseguito solo per fallimento del balzo precedente, ossia R1 >= R2 vero!)
+    MOV R0, #10        
+    B end_if           @ INDISPENSABILE: Terminato l'IF devo far saltare la CPU per Evitare che cada e fagociti il blocco Else affianco!
+    
+    @ --- RAMO ELSE ---
 else_block:
-    MOV R2, #5        @ Blocco ELSE.
+    MOV R0, #20     
 
+    @ --- FINE FLUSSO ---
 end_if:
-```
-
-### 3.3.2 Predicazione (Esecuzione Condizionata)
-Un enorme vantaggio di ARM, raramente presente su architetture x86, è che **quasi ogni singola istruzione supporta l'esecuzione condizionata**. 
-Se un blocco if fa compiere un'operazione piccolissima (1-2 righe), si può evitare totalmente l'istruzione di salto branch (`B`), che in un processore rallenta la pipeline (flush).
-```assembly
-CMP R1, R2          @ Confronta R1 e R2
-ADDEQ R3, R3, #1    @ Esegui l'ADD *SOLO* se il test era Equal (Z=1).
-MOVNE R4, #0        @ Esegui la MOV *SOLO* se C'era Not Equal (Z=0).
-```
-
-**Pattern di Ecellenza: Ricerca Rapida del Minimo e del Massimo**
-Grazie ai suffissi condizionali applicati su una banale `MOV` diventa estramemente elegante trovare minimi e massimi senza sprecare cicli di branch! 
-Ad esempio, se vogliamo capire chi sia il Minimo e chi il Massimo tra due variabili residenti in `R0` e `R1`:
-```assembly
-    @ Vogliamo che R0 contenga il Minimo ed R1 il Massimo.
-    CMP R0, R1          @ Paragoniamo R0 e R1 (Sottrazione R0 - R1)
-    
-    @ ATTENZIONE: le MOV avverranno SIMULTANEAMENTE al verificarsi logico.
-    @ E' necessario salvaguardare uno dei vecchi valori scambiando con l'ausilio intermedio. 
-    @ (Se R0 fosse > R1 dovremmo scambiarli fisicamente).
-    MOVGT R12, R0       @ (SE R0 > R1) R12 fa da temp per R0 originario
-    MOVGT R0, R1        @ (SE R0 > R1) Sovrascrivi il nuvo minimo in R0 prelevando R1
-    MOVGT R1, R12       @ (SE R0 > R1) Inserisci il vecchio massimale prelevato nel temp in R1
-    @ Se inve R0 fosse <= a R1, il processore salta queste righe come se non le vedesse!
-```
-Questa manovra è perfetta in Subroutine del tipo `minmax` per ridurre al minimo la confusione o la frammentazione del flusso.
-
-### 3.3.3 Il Ciclo While (Test d'ingresso)
-Un costrutto `while` si caratterizza per il **test d'ingresso**: il codice al suo interno viene eseguito se e solo se la condizione di partenza è vera. Se è falsa fin dall'inizio, il blocco di codice viene aggirato senza mai essere valutato.
-In Assembly ARM l'approccio segue la regola del "ragionare per contrari": all'inizio dell'etichetta del ciclo si valuta la condizione; se questa indica che dobbiamo uscire, si salta oltre la fine del blocco. Al fondo del blocco esecutivo si pone invece un branch incondizionato che forza il PC a tornare in cima al test d'ingresso per la successiva valutazione.
-
-**Esempio C:**
-```c
-int i = 0;
-while (i < 5) {
-    i++;
-}
-```
-**Traduzione in ARM:**
-```assembly
-    MOV R1, #0        @ i = 0
-
-while_start:
-    CMP R1, #5        @ Test d'ingresso: confronta i con 5.
-    BGE while_end     @ Logica invertita: se i >= 5 (Greater or Equal), salta via e termina il ciclo!
-
-    ADD R1, R1, #1    @ Corpo del While: l'incremento (i++).
-    
-    B while_start     @ Torna sempre in alto a rifare il test d'ingresso.
-
-while_end:
-```
-
-### 3.3.4 Il Ciclo For (E l'ottimizzazione decrescente "Count-Down")
-Un ciclo `for` convenzionale è composto da tre passaggi fondamentali: inizializzazione del contatore, test limite e incremento (spesso ad alto livello scriviamo: `for(i=0; i<10; i++)`).
-Tradurre fedelmente questo tipo di ciclo *in avanti* richiederebbe 3 istruzioni dedicate per poter fluire: l'aggiornamento logico (`ADD`), il ricalcolo del limite (`CMP`) e il salto direzionale (`BLT`).
-
-**L'ottimizzazione verso lo zero (Count down):**
-In ARM l'affidabilità di esecuzione e la performance balzano ad un livello superiore se decidiamo di eseguire i cicli "all'indietro", scalando dal limite fissato verso lo `0` (es. da 10 a 1). 
-Il trucco risiede nell'usare il suffisso **`S`**, richiedendo esplicitamente un calcolo sottrattivo che tocchi la diagnostica di stato: eseguendo una **`SUBS`** sul contatore, il processore detrae la quantità aritmetica e **simultaneamente indaga sui flag**. Non appena il valore decrementato tocca il suolo dello `0`, il processore accende autonomamente la flag Zero (`Z=1`). 
-Questa superba tecnica condensata **elimina stabilmente l'obbligo di inserire qualunque istruzione di confronto `CMP` ad ogni ciclo**.
-
-**Esempio C:**
-```c
-int sum = 0;
-for (int i = 5; i > 0; i--) {
-    sum = sum + i;
-}
-```
-**Traduzione in ARM:**
-```assembly
-    MOV R0, #0        @ sum = 0
-    MOV R1, #5        @ contatore i = 5 (Inizializzazione)
-
-loop_for:
-    ADD R0, R0, R1    @ sum = sum + i (Corpo del For)
-    
-    SUBS R1, R1, #1   @ i = i - 1 [E AGGIORNA I FLAG]. Quando R1 = 0, attiva Z=1.
-    BNE loop_for      @ Se Z=0 (cioè Not Equal, il decremento NON ha prodotto zero), riparti.
-
-    @ Fine del ciclo. Non abbiamo mai avuto bisogno di una CMP!
+    @ Si approderà tutti qui...
 ```
 
 ---
 
-## 📝 Esercizi del Capitolo 3
+## 3.5 Creazione Cicli ottimizzati: Il Trucco del `SUBS`
 
-### Esercizio #1 – Tradurre un If-Else
-Scrivere un frammento in Assembly in cui si confrontano `R1` e `R2`. 
-Se `R1` è strettamente maggiore di `R2` (`R1 > R2`), metti il valore 10 dentro `R0`. Altrimenti (cioè se `R1 <= R2`), inserisci 20 dentro `R0`.
-*(Indizio: Valuta la `CMP R1, R2` e usa il salto corretto verso l'else, come ad esempio `BLE - Branch Less or Equal`)*.
+L'istinto iniziale per gestire cicli For in decrescita indicherebbe la scrittura di formidabili contatori, combinando decrescite lineori ed il solito `CMP`.
+```assembly
+    @ VERSIONE SCOLASTICA
+loop_for:
+    @ ... (eseguo istruzioni) ...
+    SUB R2, R2, #1     @ Abbasso Indice iterativo 
+    CMP R2, #0         @ Verifico la presenza a 0 ?
+    BNE loop_for       @ Ritorno all'inizio se la stima regge (Not Equal a zero)
+```
 
-### Esercizio #2 – Conto alla Rovescia Ottimizzato
-Realizza un ciclo `for` ottimizzato al contrario (decremento) partendo da 5 (in `R2`). Utilizza il trucco del `SUBS`.
-Ad ogni istanza del ciclo, accumula i numeri dentro `R0`, in modo che alla fine in `R0` si calcoli $5+4+3+2+1$. 
+In ARM vige il "Rendere Veloci le cose Pratiche". Anziché sfiancare la macchina con `SUB` ed una `CMP` perenne, fondiamole nel compatto istinto combinatorio del **Suffisso S (`SUBS`)**!
 
-### Esercizio #3 – La prima Subroutine (Uso del BL)
-Definisci un'etichetta `raddoppia` che riceva un valore in `R0`, applichi un'istruzione in grado di moltiplicarlo per 2 (puoi usare un `LSL`), per poi restituire il controllo al codice di base istruendo la CPU a ritornare partendo dal Link Register (`BX LR`). 
-Costruisci il tuo programma base (`_start`) in modo tale che chiami questa funzione passandogli vari numeri tramite la `BL`.
+```assembly
+    @ VERSIONE OTTIMIZZATA ARM (Un'intera istruzione decurtata!)
+loop_for:
+    @ ... (eseguo istruzioni) ...
+    SUBS R2, R2, #1    @ Decrementa e "simultaneamente" AGGIORNA LE FLAG NEL CPSR!
+    BNE loop_for       @ Sente automaticamente il Flag e cicla finquando R2 tocca 0 (e scatterà l'equal!)
+```
+
+> ⚠️ **Attenzione / Errore Comune: "Il Fall-Through"**
+> Al termine del corpo generale non sussistendo confini reali e netti, il processore (che avanza riga per riga la lettura PC) fagociterà e proseguirà l'esecuzione sui segmenti sottostanti anche se si trattano di etichette secondarie separate. Fai in modo di ingabbiare il blocco principale (`B stop`) senza far cadere la lettura in pozzi non richiamati attitudinalmente! 
+
+---
+
+## 3.6 Il Graal della Programmazione: Subroutines ed Indirizzi (`BL`)
+
+Dividere ampie macro-richieste in agili funzioncine invocabili dal nostro Main (`_start`) in gergo si definiscono **Subroutines**. 
+
+Saltare col normale `B` non ci porterà però alla soluzione di "ritorno a casa".
+L'architettura ci porge allora `BL` (*Branch with Link*): esso scaturisce formalmente un balzo consueto, ma salvando intelligentemente la coordinata d'atterraggio nativa dell'istruzione seguente nel prezioso **Link Register (`LR` - R14)**.
+In questo modo a Subrotine conclusa potremo disfare il balzo dicendogli semplicemente "Guida al Return basandoti sulle metriche depositate su LR": istruendo un provvidenziale `BX LR`.
+
+```assembly
+_start:
+    MOV R0, #5
+    BL raddoppia       @ Balza verso "raddoppia", e spara nel [LR] il ritorno (Riga dopo)
+    
+    @ ...Il programma proseguirà pacificamente qui a funzio concluso...
+    
+stop:
+    B stop             @ Arresto di sicurezza Fall-through
+
+raddoppia:
+    LSL R0, R0, #1     @ Traslazione d'operande per originare X 2
+    BX LR              @ "Branch eXchange" ritornanti all'istruzione in riga salvata nel [LR].
+```
+
+---
+
+## 📝 Pronti all'Azione: Esercizi Pratici
+
+Entra nella cartella `Esercizi/` di `Capitolo 3`. Presta rigorosa diligenza nell'osservare non solo i blocchi if, ma la gestione protetta del flow istruzionale che arresta il fall through grazie al classico loop ombra `B stop`.
+
+*   **`es1.s` (Tradurre un If-Else Strutturato):**  
+    Testa minuziosamente col `CMP` i caricamenti delle due variabili dalla struct in RAM (`number`). Usufruendo di un `BLT` indirizzato sapientemente genererai l'inversione d'innesco ad un blocco `else_block` protetto da sovrascritte accidentali da uno scutivo `B end_if`.
+
+*   **`es2.s` (Cicli veloci col costrutto `SUBS`):**  
+    Ammirerai la bellezza accattivante di un ciclo retroattivo. Avvierai `R0` vuotato per il deposito dei risultati, e grazie a `SUBS` applicherai decrescimento per un `BNE` fluido sprovvisto in assoluto del noioso `CMP`.
+
+*   **`es3.s` (Modularità avanzata e `BX LR`):** 
+    Studierai il richiamo su `BL` che delegherà i registri alla stringa d'elaborazioni annidate della sub-funzione "raddoppia", provvidente della moltiplicativa e conclusasi pacificamente e magicamente sul Main point originario grazie a `BX LR`. Riponi le label extra in coda all'Applicazione, cosicché il flusso scivoli senza cadervi inesortato.

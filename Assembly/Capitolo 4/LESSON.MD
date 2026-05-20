@@ -1,206 +1,181 @@
 # Capitolo 4: Strutture Dati Complesse e lo Stack
 
-Per poter risolvere problematiche algoritmiche reali, la semplice gestione di una o due variabili non basta più. In questo capitolo ci dedichiamo all'esplorazione della memoria per gestire blocchi di dati sequenziali (Vettori e Stringhe) e imparare a preservare lo stato del processore utilizzando lo Stack Pointer, competenza fondamentale per scrivere subroutine modularizzate.
+Per poter risolvere problematiche algoritmiche reali (gestione di database, stringhe di testo o logiche videoludiche), la singola manipolazione di una variabile temporanea `x` o `y` non è sufficiente. In questo ultimo capitolo ci dedicheremo al controllo di ingenti masse di dati contigui in memoria (**Vettori** e **Stringhe**) e al concetto critico della preservazione del "contesto" di esecuzione mediante l'impiego della memoria **Stack** (Pila).
 
 ---
 
 ## 4.1 I Vettori (Arrays) in Memoria
-Un vettore non è altro che una sequenza di dati memorizzati in indirizzi fisici adiacenti (contigui). In ARM a 32 bit, un numero intero standard (dichiarato con `.word`) occupa **4 Byte**.
-Di conseguenza, se il primo elemento si trova all'indirizzo `1000`, il secondo sarà a `1004`, il terzo a `1008` e così via.
 
-*Nota Operativa (Allineamento):* Quando si lavora con blocchi da 4 byte, è cruciale che l'indirizzo di memoria di partenza cada su un asse multiplo di 4. Questa regola è detta **allineamento della memoria** e si forza comunemente prima della dichiarazione dei dati aggiungendo la direttiva `.balign 4`.
+Un vettore (array) non è altro che una sequenza di dati memorizzati fisicamente l'uno accando all'altro (indirizzi continui) nella Random Access Memory (RAM). 
+Ricorda il teorema di base dell'architettura ARM a 32-bit: ogni "parola" (`.word` = numero intero nativo) occupa esattamente **4 Byte**. 
 
-### Dichiarazione in Memoria (Sezione `.data`)
-Per inizializzare un vettore (array) all'interno del programma, si utilizza la classica direttiva `.data`. I numeri a 32 bit si definiscono concatenando i valori alla direttiva `.word`, separati da una virgola. Allo stesso tempo, se serve uno spazio di lavoro vuoto per memorizzare risultati, si usa la direttiva `.space`.
+Ciò significa che, muoversi lungo il vettore richiede balzi progressivi (+4, +8, +12 byte):
+- Indice [0] ➔ Posizione Originale (es. RAM: `0x1000`)
+- Indice [1] ➔ Offset di 4 Byte (es. RAM: `0x1004`)
+- Indice [2] ➔ Offset di 8 Byte (es. RAM: `0x1008`)
+
+### Dichiarare costrutti in `.data` e il Post-Incremento
+
+In Assembly gli array pre-fabbricati o gli "spazi vuoti" di lavoro vengono allocati all'interno della direttiva riservata `.data`. 
+Una direttiva vitale, che interviene ad arginare i crolli di sistema è il `.balign 4`. Poiché i blocchi ARM richiedono per Legge architetturale di essere allineati modularmente su multipli numerici di 4, si impone all'assemblatore di garantire l'allineamento inserendo questo parametro obbligatorio prima delle Word.
+
 ```assembly
 .data
-    .balign 4             @ Assicura rigorosamente l'allineamento di sicurezza a 4 byte
+    .balign 4                      @ Regola d'oro: Allineamento base per word intere
     vettore_pieno: 
-        .word 10, -5, 30, 42, 7    @ Creo un vettore predefinito lungo 5 elementi interi
-    
+        .word 10, -5, 30, 42, 7    @ Creo un vettore predefinito lungo 5 elementi (20 Byte tot)
     vettore_vuoto: 
-        .space 40                  @ Alloco "a vuoto" 40 byte di zeri. Equivale ad un array di 10 interi! (10 * 4 byte)
+        .space 40                  @ Alloco "a vuoto" 40 byte (= 10 Word / interi pronti per esser popolati)
 ```
 
-### 4.1.1 Indice vs Offset: La distinzione fondamentale
-Spesso i termini vengono usati come sinonimi, ma in Assembly hanno scopi diversi:
+**Offset e Post-incremento automatico**  
+Per scandagliare rapidamente un vettore in un ciclo senza impazzire ad aggiungere a mano `ADD R1, R1, #4` ad ogni turno, ARM dispone della magia del **Post-incremento**. Usando `[Reg], #N` nel comando di lettura `LDR`, l'hardware assorbirà prima brutalmente il dato all'indirizzo originario e dopodiché, contestualmente, spingerà avanti l'indirizzo del tuo puntatore di 4 passi, pronto pre-sistemato per il prossimo giro ciclico!
 
-*   **L'Indice ($i$):** È un concetto **logico**. Rappresenta la posizione dell'elemento nel vettore (0°, 1°, 2°...). È il numero che useresti in un ciclo `for (int i=0; i<N; i++)`. In ARM, l'indice solitamente risiede in un registro (es. `R2`) che viene incrementato di 1 ad ogni iterazione.
-*   **L'Offset:** È un concetto **fisico**. Rappresenta il numero di **byte** di distanza dall'inizio del vettore. Poiché ogni `.word` occupa 4 byte, l'offset non avanza di uno in uno, ma di quattro in quattro.
-
-**La formula magica:**
-$$\text{Offset} = \text{Indice} \times \text{Dimensione Elemento (4 byte per .word)}$$
-
-### Modalità di Indirizzamento (Addressing)
-Per "scorrere" un vettore, ARM offre delle tecniche di calcolo rapido degli indirizzi incluse organicamente nei comandi Load/Store (`LDR` / `STR`). Le più usate nei cicli sono tre:
-
-1. **Pre-Indexed con Update (`!`):** Cambia il puntatore PRIMA di leggere.
-   ```assembly
-   LDR R0, [R1, #4]!    @ L'indirizzo base R1 viene prima incrementato di 4, poi si legge in R0
-   ```
-2. **Post-Indexed:** Carica il valore puntato adesso, e DOPO aggiorna il puntatore. È in assoluto il metodo più comodo per iterare e scivolare linearmente un elemento alla volta.
-   ```assembly
-   LDR R0, [R1], #4     @ Legge in R0 il valore all'indirizzo corrente R1. DOPO averletto, assegna R1 = R1 + 4.
-   ```
-3. **Register Offset con Shift:** È il metodo più simile ai linguaggi di alto livello (`vettore[i]`). Utilizza un registro come **Indice logico** (es. `R2`) e lascia che l'hardware calcoli l'**Offset fisico** in tempo reale moltiplicando per 4 tramite lo shift.
-   ```assembly
-   @ Ipotizziamo: R1 = Indirizzo base, R2 = Indice logico (0, 1, 2...)
-   LDR R0, [R1, R2, LSL #2]  
-   
-   @ Cosa succede dietro le quinte?
-   @ 1. Prende l'indice in R2
-   @ 2. Lo shifta a sinistra di 2 (LSL #2), che equivale a moltiplicare per 4.
-   @    Ora ha ottenuto l'OFFSET.
-   @ 3. Somma l'OFFSET all'indirizzo base R1.
-   @ 4. Legge il valore risultante in R0.
-   ```
-   *Vantaggio:* Non devi modificare manualmente l'indirizzo base `R1`. Puoi accedere a qualsiasi elemento `i` saltando direttamente alla posizione corretta.
-
-**Nota Operativa: L'Inganno della Parità (Indici vs Valori):** 
-Nei test universitari viene spesso chiesto di operare sui vettori valutando la parità in due accezioni diverse che non vanno confuse:
-*   **Indici Pari/Dispari (Posizione in memoria)**: Parliamo della posizione dell'elemento (es. `V[0]`, `V[2]`). Puoi gestirla incrementando il passo base di avanzamento a run-time (avanzando l'indirizzo di `+8` byte invece che di `+4`, saltando quindi un elemento in modo alternato) oppure verificando il registro che funge da **contatore dell'indice `i`** (es. `TST R2, #1`).
-*   **Valori Pari/Dispari (Contenuto)**: Qui l'indice numerico di cella non interessa! Si tratta di capire se il valore estratto è divisibile per due (es. "14" è pari, "3" è dispari). Per scoprirlo, devi caricare il valore in un registro (es. nell'`R3` interno al ciclo) ed eseguire una `TST R3, #1`. Se il bit meno significativo è a 1, il numero estratto è Dispari (esci con `BNE dispari`). Altrimenti, se il bit è a 0, il numero è Pari (bypassa con `BEQ pari`).
-
-**Esempio Dimostrativo: Somma degli elementi di un vettore (Post-Indexed)**
 ```assembly
-    LDR R1, =vettore    @ R1 contiene l'indirizzo base dell'inizio dell'Array
-    MOV R2, #5          @ Numero di elementi (N = 5) da prelevare
-    MOV R0, #0          @ Inizializziamo l'accumulatore della somma (R0 = 0)
-loop_array:
-    LDR R3, [R1], #4    @ Preleva il valore in R3 e avanza il puntatore R1 di 4 byte
-    ADD R0, R0, R3      @ Somma = Somma + Elemento
-    SUBS R2, R2, #1     @ Countdown degli elementi esaminati e aggiornamento Flag di Zero (Z)
-    BNE loop_array      @ Se R2 != 0, riparti in testa!
+@ In un ipotetico loop
+LDR R4, [R1], #4    @ "Carica il numero in R4. Dopo, sposta permanentemente l'indirizzo di R1 in avanti di 4 byte!"
 ```
 
 ---
 
-## 4.2 Stringhe (Array di Caratteri)
-Una stringa non è altro che un array di byte trattati logicamente anziché matematicamente. Ci sono due differenze nette:
-1. Ogni carattere occupa rigorosamente **1 Byte** (dichiarato con direttive `.ascii` o `.asciz`). 
-2. A differenza dei vettori da 5, 10 o 50 spazi predeterminati, non sappiamo quanto sia lunga una frase in memoria. La stringa si considera conclusa unicamente all'incontro del **Terminatore Nullo**, ovvero il byte di valore logico zero (il classico `\0` dei linguaggi di base).
+## 4.2 Le Stringhe e le letture al Byte (LDRB)
 
-### LDRB (Load Register Byte) e STRB
-Per leggere/scrivere i caratteri si **deve** usare l'istruzione al byte. Applicare una classica `LDR` caricherebbe 4 lettere contemporaneamente, creando errori sui dati e potenziali memory fault per difetti di allineamento su indirizzi dispari.
+E i Vettori di caratteri di testo, le antiche **Stringhe**? 
+Ogni Lettera, incodificata secondo lo standard base Tabella ASCII (es. la lettera 'a' = decimale 97, la 'A' = 65), è straordinariamente contenuta in un singolo, agile, **1 Byte**. E non 4 come logica di parola originaria ARM!
+
+Per gestire l'allocazione massiccia ram si usa `.asciz "testo"`. L'estensione "z" finale significa "Zero Terminated" (C-Style), ossia il compilatore appenderà da solo un misterioso byte nullo `0x00` in coda al nome, che fungerà a te da "guardarail" algoritmico ("se leggi 0, la parola ha finito le lettere!").
+
+> **Regola d'Oro per Stringhe:** Non puoi usare il generico `LDR` da 4 byte per l'alfabeto, per sbaglio risucchieresti intere parole compresse assieme causandoti crash! La sintassi speciale adibita ai caratteri è **`LDRB`** (Load Register Byte) che recupera dalla RAM una celletta pura da singolo Byte per turno; e qualora tu la volessi sovrascrivere o rimpiazzare il formato consueto sarà l'equivalente destinale **`STRB`** (Store Byte).
+
+---
+
+## 4.3 Gestire l'indirizzamento Dinamico: Il "Treno" dell'LSL
+
+Talora un array richiede saltuariamente aggiornamenti discontigui, es. "*Modifica solamente gli Indici Dispari*".
+Se avessi un puntatore ad indirizzo Base `R1` e un calcolatore/indice iterativo in accrescimento dentro `R2` (`R2`=0, `R2`=1, `R2`=2), non potresti incrociarli brutalmente con un semplice offset matematico, giacché se dicessi: 
+`STR [numero], [R1, R2]` il salto che la CPU intenderà avverrà per "Singolo Byte" (R1 + 1 pos.Byte, +2 pos.Byte) ma tu stai manipolando i numeri Word da 4!
+
+Il segreto sta nell'ancorare un'operazione di Logica Shift alla destra dello statement, così `R2` produrrà agilmente un "treno espanso": *Indice Corrente × 4*. Essere esperti matematicamente aiuta a scrivere un codice robusto.
+
 ```assembly
-LDRB R0, [R1], #1   @ Carica esattamente 1 byte in R0 espandendolo con zeri. Sposta l'indirizzo R1 avanti di +1.
-```
-
-### Valutazione ASCII dei caratteri
-Il processore è ignaro dei caratteri tipografici. Elabora esclusivamente il loro valore numerico associato nello standard ASCII (es. 'A' equivale a 65, 'a' equivale a 97). 
-Fortunatamente (e soprattutto nei test di IF stringati) l'assemblatore capisce automaticamente l'equazione apponendo gli apici singoli e il cancelletto:
-```assembly
-CMP R0, #'a'        @ Paragona segretamente R0 al valore ASCII numerico fisso di 'a'
-```
-
-**Distinguere le Categorie (Lettere vs Numeri):**
-Durante l'analisi si tende comunemente a usare filtri di riconoscimento per capire se il carattere recuperato appartiene alle "lettere" o alle "cifre".
-1.  **Riconoscimento Lettere Minuscole:** Si verifica che il valore ASCII sia compreso tra il limite inferiore `a` ed il limite superiore `z`.
-  ```assembly
-  CMP R0, #'a'
-  BLT non_e_minuscola   @ E' minore di 'a'? 
-  CMP R0, #'z'
-  BGT non_e_minuscola   @ E' maggiore di 'z'? 
-  @ << Se arriva a questa riga, il carattere è sicuramente una lettera MINUSCOLA >>
-  ```
-2.  **Riconoscimento Cifre Numeriche:** Si usano i caratteri compresi tra `0` e `9`. Attento: NON devi fare un confronto con i valori matematici numerici puri (non usare `#0` o `#9`). La stringa non contiene il valore `1`, ma il carattere ASCII `'1'` (che a livello numerico vale 49). Usa sempre il singolo apice!
-  ```assembly
-  CMP R0, #'0'
-  BLT non_e_numero      @ E' minore del codice ascii di '0' ?
-  CMP R0, #'9'
-  BGT non_e_numero      @ E' maggiore del codice ascii di '9' ?
-  @ << Se arriva a questa riga, la cella conteneva sicuramente una Cifra Numerica >>
-  ```
-
-**Esempio Dimostrativo: Contare la lunghezza di una stringa con While-Loop terminatore**
-```assembly
-    LDR R1, =stringa    @ R1 punta al primissimo carattere "A..."
-    MOV R0, #0          @ R0 farà da contatore totale della lunghezza
-loop_string:
-    LDRB R2, [R1], #1   @ Estrae un singolo carattere e fa avanzare il puntatore R1 di 1 byte
-    CMP R2, #0          @ Verifica se si tratta del terminatore nullo '\0'
-    BEQ end_string      @ Se la flag di zero Z si attiva, la stringa è finita: esci dal ciclo!
-    ADD R0, R0, #1      @ Incrementa il contatore perché il carattere è valido
-    B loop_string       @ Torna all'inizio del loop per testare il byte successivo
-end_string:
+STR R10, [R1, R2, LSL #2]  @ Tattica Avanzata! L'indice iterativo `R2` (es. Posizione[2])
+                           @ verca ingrandito Left Shift di 2 posizioni (ovverosia R2 * 2^2 = R2 * 4).
+                           @ Così ottieni: Pos[2] * 4 byte di scarto = 8 byte di salto offset fisicato perfetto!
 ```
 
 ---
 
-## 4.3 Lo Stack (La Pila di Memoria) e le Convenzioni
-Man mano che le subroutine iniziano a formare catene chiamandosi a vicenda o processando dati complessi, i 16 registri a disposizione diventano insufficienti. Lo **Stack** (o Pila) è una porzione di memoria RAM dedicata alla conservazione temporanea dei dati e del contesto del processore.
+## 4.4 Modularità Avanzata: Le Subroutine e lo Standard AAPCS
 
-### Il Funzionamento LIFO e lo Stack Pointer (SP)
-La gestione della memoria avviene secondo la logica **LIFO (Last-In, First-Out)**: l'ultimo dato inserito è il primo ad essere estratto. Immagina una pila di piatti: puoi aggiungere o togliere piatti solo dalla cima.
+Nel Capitolo 3 abbiamo appreso base l'idea di richiamare funzioni esterne per snellire il blocco "Main", usando `BL` (Branch with Link) e tornando a casa con `BX LR`.
+Nella programmazione reale, tuttavia, le subroutine non agiscono a mani vuote: devono ricevere dei "Parametri" e restituire un "Risultato" coerente. In ARM vige a tale scopo uno standard istituzionale chiamato **AAPCS** (*ARM Architecture Procedure Call Standard*).
 
-Il registro **`SP` (Stack Pointer, R13)** ha il compito vitale di puntare sempre alla "cima" attuale della pila:
-- Quando salviamo un dato (**PUSH manuale**), dobbiamo prima spostare lo `SP` verso il basso (sottraendo byte) e poi scrivere il dato usando `STR`.
-- Quando recuperiamo un dato (**POP manuale**), dobbiamo leggere il valore con `LDR` e poi riportare lo `SP` verso l'alto (aggiungendo byte), liberando lo spazio.
+### La convenzione dei Registri Nudi (Subroutine a base semplice)
+Secondo le norme AAPCS, se la tua Subroutine richiede dati di partenza, il chiamante (il tuo `_start`) deponi i valori tassativamente in file nei primissimi quattro registri in un esatto ordine:
+*   **`R0`, `R1`, `R2`, `R3`**: I veicoli di trasporto per Argomenti e Parametri (es. un intero da testare, l'indirizzo array, o una stringa RAM).
+*   **`R0`**: Lo stesso primo veicolo `R0` ha lo scopo esclusivo di **ospitare l'Output (es. il byte Result)** prima di spegnersi e tornare al padre chiamante.
 
-### Stack "Full Descending"
-In architettura ARM, lo stack è di tipo **Full Descending**:
-1.  **Full**: lo `SP` punta sempre all'ultimo indirizzo effettivamente occupato (non al primo libero).
-2.  **Descending**: lo stack cresce verso l'alto... ma negli indirizzi! In termini fisici, la pila parte da un indirizzo "alto" (es. `0x0000FFFF`) e cresce verso il basso (es. `0x0000FF00`).
-    - Un "Push" comporta una **sottrazione** dallo `SP` (es. `SUB SP, SP, #4`).
-    - Un "Pop" comporta una **addizione** allo `SP` (es. `ADD SP, SP, #4`).
-
-### Standard AAPCS (ARM Architecture Procedure Call Standard)
-Per permettere a funzioni scritte da programmatori diversi (o dal compilatore C) di comunicare senza errori, esistono regole ferree sull'uso dei registri:
-
-- **Registri Scratch (`R0`-`R3`) - "Caller-Saved":** Sono i registri usati per passare parametri alle funzioni. La subroutine chiamata è libera di modificarli. Se il "chiamante" ha bisogno di conservare i valori in `R0-R3` dopo la chiamata, deve salvarli lui stesso nello stack prima di invocare la funzione.
-- **Registri di Contesto (`R4`-`R11`) - "Callee-Saved":** Sono i registri di lavoro. Se una subroutine vuole usarli, **deve** prima salvarne il contenuto originale nello stack e ripristinarlo prima di terminare. Il "chiamante" ha la garanzia che, dopo la funzione, questi registri conterranno gli stessi valori di prima.
-- **Link Register (`LR`, R14):** Contiene l'indirizzo di ritorno. Se la subroutine chiama a sua volta un'altra funzione (`BL`), l'indirizzo di ritorno originale in `LR` verrebbe sovrascritto. Per questo motivo, salvare `LR` nello stack è la prima cosa da fare in subroutine non terminali ("non-leaf functions").
-
-### Gestione Manuale dello Stack (Senza PUSH/POP)
-Sebbene ARM offra `PUSH` e `POP`, in ambito accademico (o per avere pieno controllo) si preferisce spesso interagire direttamente con lo `SP` tramite istruzioni di aritmetica e accesso alla memoria.
+Ecco un esempio di una Subroutine **chiusa ed indipendente**, eseguibile al 100% coi nudi registri (nessuno stack è per ora invocato perché la matematica operata al suo interno non necessita di altre sotto-chiamate):
 
 ```assembly
-@ --- Esempio: Anatomia di una Subroutine con gestione MANUALE dello Stack ---
-subroutine_esempio:
-    @ == PROLOGO ==
-    @ 1. Creiamo spazio nello stack (3 registri * 4 byte = 12 byte)
-    SUB SP, SP, #12         
+_start:
+    LDR R0, =25      @ 1° Parametro d'ingresso (es: x=25)
+    LDR R1, =5       @ 2° Parametro d'ingresso (es: y=5)
     
-    @ 2. Salviamo i registri manualmente negli slot creati
-    STR LR, [SP, #8]        @ Salviamo LR nell'ultimo slot
-    STR R4, [SP, #4]        @ Salviamo R4 nello slot centrale
-    STR R5, [SP, #0]        @ Salviamo R5 nel primo slot (puntato da SP)
+    BL calcola_sconto  @ Invoco la funzione "Calcola_Sconto"
     
-    @ ...
-    @ CODICE DELLA SUBROUTINE: 
-    @ Qui possiamo usare R4 e R5 liberamente per i calcoli.
-    @ ...
+    @ Al ritorno PC l'AAPCS garantisce che R0 possieda l'Output magico finale ("20")
+    STR R0, [R10]    @ Salvo il Risultato Finale
+    
+stop:
+    B stop
 
-    @ == EPILOGO ==
-    @ 1. Ripristiniamo i valori originali leggendoli dallo stack
-    LDR R5, [SP, #0]
-    LDR R4, [SP, #4]
-    LDR LR, [SP, #8]
+@ --- SUBROUTINE INDIPENDENTE (No Stack) ---
+calcola_sconto:
+    SUB R0, R0, R1   @ R0 accumulerà l'onere del risultato: (25 - 5 = 20)
+    BX LR            @ Usa il tracciante LR per l'immediato rincaso.
+```
+
+---
+
+## 4.5 Le Subroutine in coppia con lo Stack (SP)
+
+Tutto fantastico finché gli esercizi sono elementari. Ma riflettici: **cosa accade se si avesse a che fare con una Subroutine abnorme, che impiegasse decine di registri locali (Le famose variabili `$v`: R4-R11) e che chiamasse di getto a sua volta svariate alterne subroutine (`BL`) nel mezzo del suo scorrimento?**
+Una tragedia computazionale. Qualsiasi ulteriore balzo di `BL` rimpiazzerebbe disperatamente l'impronta GPS depositata in `LR` all'avvio frangendola, e l'usurpazione dei registri intaccherebbe irrimediabilmente i dati del Main di partenza che li credeva sacri.
+
+Qui interviene **sua Maestà lo Stack Pointer (`SP` - R13)**, un registro specializzato alla manipolazione esplicita di una struttura Last-In-First-Out (LIFO) in RAM con una singolare modalità di "accrescimento all'incontrario" in memoria Discendente; un "tavolo" in cui parcheggiare temporaneamente i contenuti a rischio, fra cui l'`LR` prezioso delle subroutine madre, e ripescarli quando necessari. In ARM lo stack cresce **verso il basso** (da indirizzi alti a indirizzi bassi).
+
+Prima dell'esecuzione algoritmica di una SubRoutine corposa, dobbiamo accatastare sul tavolo della RAM **tutti** i registri fragili. Esistono storicamente due metodi per "salvare il contesto" (Prologo ed Epilogo): l'approccio manuale (nativo e incalcolabilmente nobile) e l'approccio astratto (tramite macro).
+
+### Metodo 1: Gestione Manuale della Subroutine (Senza PUSH / POP)
+
+Questa è la manipolazione "nuda e cruda" essenziale per l'indirizzamento di argomenti superiori (Oltre il canonico R3, un Linguaggio C userebbe questo metodo forzando RAM!) o per erigere Buffer massivi Locali incamerati. 
+
+```assembly
+@ --- FUNZIONE MASTER (Utilizzo Subroutine Protetta da Stack) ---
+grande_calcolatore:
+    @ ============= PROLOGO (G. Manuale) =============
+    @ 1. Emetto l'Allocazione: Scavo lo Stack discendente abbassando lo SP di 12 byte (3 Word spazio)
+    SUB SP, SP, #12
     
-    @ 2. Liberiamo lo spazio occupato riportando lo SP al valore originale
+    @ 2. Adagio i registri V ($v1,$v2 non alterabili per Regola!) e l'LR originario nei solchi ricavati.
+    STR R4, [SP, #0]    @ Impianto stabile base (Offset #0 dalla vetta decrescente SP)
+    STR R5, [SP, #4]    @ Risalgo in cima di 1 Word (Offset #4) e poso R5
+    STR LR, [SP, #8]    @ Impacchetto le "Briciole di pollicino" LR salvandone il tracciato nativo
+    @ ================================================
+
+    @ --- CORPO DELLA SUA FUNZIONE ---
+    MOV R4, R0          @ "Sporco" tranquillamente R4 (il Parametro di base inglobato R0)
+    MOV R5, R1          
+    
+    BL calcola_sconto   @ BAM! Invocazione BL Annidata! (Sovrascriverà l'LR ma lo Stack ci protegge l'antenato!)
+    
+    @ Manipolazioni pesanti, l'esito torna con AAPCS inglobato su R0.. e si rientra!
+    
+    @ ============= EPILOGO (G. Manuale) =============
+    @ 3. Rialzo il Tesoro: Prelevo esattamente nell'ordine depositato
+    LDR R4, [SP, #0]
+    LDR R5, [SP, #4]
+    LDR LR, [SP, #8]    @ Miracolo! Ritrovo intatto l'LR originale che un'altra BL aveva sterminato.
+    
+    @ 4. De-Allocazione Doverosa: Elimino i Buffer temporanei (Restituendo i Miei 12 Byte!)
     ADD SP, SP, #12
     
-    @ 3. Ritorno al chiamante
+    @ 5. Ritorno Ufficiale della Madre: AAPCS rispettato
     BX LR
+    @ ================================================
 ```
 
-**Nota di Sicurezza:** Lo Stack deve essere sempre **bilanciato**. Se scendi di 12 byte nel prologo, devi risalire esattamente di 12 byte nell'epilogo. Se commetti un errore di calcolo dell'offset (es. salvando a `[SP, #2]` invece di `[SP, #4]`), corromperai i dati e il programma crasherà all'uscita della funzione.
+### Metodo 2: L'utilizzo delle Macro di sistema (`PUSH` e `POP`)
+
+Per sopperire alla noiosa ridondanza umana, gli assemblatori ARM moderni offrono due formidabili pseudo-istruzioni (`PUSH` e `POP`) che raggruppano da sé tutta la FASE UNO e FASE DUE viste pocanzi, abbassando o alzando lo scarto SP automaticamente per multipli interni dedotti dalle variabili in lista `{}`.
+
+```assembly
+mia_funzione_annidata_veloce:
+    @ --- PROLOGO (Auto-Gestito) ---
+    PUSH {R4, R5, LR}   @ Il sistema da solo alloca -12Byte e salva nell'astratto
+
+    @ --- CORPO DELLA FUNZIONE ---
+    
+    @ --- EPILOGO (Auto-Gestito) ---
+    @ Rimpasto i valori. Curiosità estrema: Anziché ricaricare [LR] e fare [BX LR],
+    @ possiamo iniettare l'esito dirattamente nel PC chiudendo i giochi in una linea!!
+    POP {R4, R5, PC}    
+```
+
+> ⚠️ **Attenzione / Errore Comune: "L'Asimmetria Fiscale dello SP"**
+> Indistintantamente tu ricorra all'uso "Manuale" o alle istruzioni astratte Macro "Push / Pop", lo Stack è rigoroso e instabile. Se decidi di scavare la discesa per -12 Byte, in fondo al file di esecuzione tu **dovrai tassativamente** rigonfiarne simmetricamente le medesime +12 celle vuotate (O poppando lo stesso raggruppamento o invocando l'ADD). Lo Sbilanciamento dello Stack Pointer a chiusura Subroutine causa inevitabilmente il dirottamento PC, facendo arrestare di netto il computer intero per violazione critica o Kernel Panic in Assembly.
 
 ---
 
-## 📝 Esercizi del Capitolo 4
+## 📝 Pronti all'Azione: Esercizi Pratici
+Avventurati nella formattazione ad interazioni memory. Esgui compilazioni mirate nella cartella `Capitolo 4/Esercizi`.
 
-### Esercizio #1 – Somma elementi positivi (Array)
-Scrivere un programma che, iterando un vettore `numeri` di 6 elementi interi (es. `.word 4, -2, 7, 0, -5, 10`), sommi tra loro **solamente** i numeri strettamente positivi (>0). Il totale dovrà essere memorizzato in `R0` alla fine dell'esecuzione.
-*(Consiglio: sfrutta la CMP del dato estratto con l'immediato #0 prima di autorizzare la somma)*.
-
-### Esercizio #2 – Modifica Stringa (Uppercase)
-Si supponga di avere in memoria una stringa `.asciz "assembly"`. Scrivere un ciclo in Assembly ARM che scorra sequenzialmente la stringa, modificandola in memoria (tramite `STRB`) al fine di convertire ogni lettera nel formato Maiuscolo (da "assembly" a "ASSEMBLY"). *(Suggerimento: la tabella ASCII rivela che tra un carattere minuscolo e il suo corrispondente maiuscolo c'è una distanza fissa di `- 32`. Esempio: 'a' - 32 = 'A')*.
-
-### Esercizio #3 – Modifica alternata Array (Indirizzamento a shift logico)
-Dichiarare un vettore inizializzato a zero con 8 elementi nulli `.word 0,0,0,0,0,0,0,0`. Tramite un ciclo con un contatore iterativo (es. `R2` che conta da 0 a 7), assegnare all'elemento l'indice stesso (`R2`), scrivendo i dati **solo nelle posizioni di indice dispari**, mantenendo intatte le caselle ad indice pari (risultato finale = `[0, 1, 0, 3, 0, 5, 0, 7]`). Effettuare il calcolo di parità dell'indice con l'istruzione `TST R2, #1` e registrare le elaborazioni dinamiche ricorrendo alla store con offset calcolato tramite shift `STR R2, [R1, R2, LSL #2]`.
-
-### Esercizio #4 – La Subroutine "Sicura" che calcola il Massimo
-Implementare una subroutine `cerca_max` che prenda in input l'indirizzo base di un array grezzo in `R0` e il numero totale di elementi `N` in `R1`. 
-Tale Subroutine dovrà trovare il valore massimo presente all'interno del vettore e restituirlo in output direttamente nel registro `R0` al termine della scansione.
-Poiché la ricerca richiederà con buona probabilità l'utilizzo di specifici registri interni d'appoggio (`R4`, `R5`, ecc.), bisognerà assicurarsi di salvare e ripristinare in maniera appropriata il contesto attraverso la gestione manuale dello Stack (senza usare `PUSH` e `POP`). L'esecuzione dal codice chiamante (`_start`) dovrà avvenire con l'istruzione canonica `BL cerca_max`.
+*   **`es1.s` (Vettoriale base - Selezione Paritetica Positiva):**  
+    Simula per intero lo scorrimento di `.word` applicando e manipolando l'`LDR` dotato di Post-Incremento `[R1], #4`. Unirà le filosofie del Chap3 impiegando un Branch condizionale sfaldante `BLE salta_somma` cosicché scavalchi elegantemente l'`ADD` accumulatore preservando l'ingaggio solo col flag limitante (>0).
+    
+*   **`es2.s` (Il Filtro Maiuscole per le Stringhe - Il C++ Array Characters):**  
+    Punteggerai su `LDRB` (Load Singolo Byte). Ti misurerai al buio col terminale invisibile della string ASCII `0` in coda alla parola ".asciz". Per rimpallare le lettere, sfrutta logiche alfabetiche di distanza sottrattiva: Sottrai un Immediato equivalente a #32 al `[byte character letter]` processato e rilascialo sovrapponendolo istintamente allo scan nativo tramite ripescaggio `STRB` ad offset autoincremento!
+    
+*   **`es3.s` (L'Espressione a Shift di Coda per Allocazione Mista):**  
+    Alloca a zero l'Array `.word` ed adopera come "filtro matematico pari/dispari iterativo" il Check flaggiativo logico `TST R2, #1` e valuta l'esecuzione Branching. Successenzialmente farai i conti finali col Treno "Str-Offset Espanso" in scala per depositare specifici salti multipli di 4 usando un fine operazione magica `STR [..., ..., LSL #2]`.
