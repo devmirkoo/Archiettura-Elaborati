@@ -117,15 +117,15 @@ Man mano che le subroutine iniziano a formare catene chiamandosi a vicenda o pro
 La gestione della memoria avviene secondo la logica **LIFO (Last-In, First-Out)**: l'ultimo dato inserito è il primo ad essere estratto. Immagina una pila di piatti: puoi aggiungere o togliere piatti solo dalla cima.
 
 Il registro **`SP` (Stack Pointer, R13)** ha il compito vitale di puntare sempre alla "cima" attuale della pila:
-- Quando salviamo un dato (**PUSH**), lo `SP` si sposta per fare spazio e il dato viene scritto.
-- Quando recuperiamo un dato (**POP**), lo `SP` legge il valore e torna indietro, liberando virtualmente lo spazio occupato.
+- Quando salviamo un dato (**PUSH manuale**), dobbiamo prima spostare lo `SP` verso il basso (sottraendo byte) e poi scrivere il dato usando `STR`.
+- Quando recuperiamo un dato (**POP manuale**), dobbiamo leggere il valore con `LDR` e poi riportare lo `SP` verso l'alto (aggiungendo byte), liberando lo spazio.
 
 ### Stack "Full Descending"
 In architettura ARM, lo stack è di tipo **Full Descending**:
 1.  **Full**: lo `SP` punta sempre all'ultimo indirizzo effettivamente occupato (non al primo libero).
 2.  **Descending**: lo stack cresce verso l'alto... ma negli indirizzi! In termini fisici, la pila parte da un indirizzo "alto" (es. `0x0000FFFF`) e cresce verso il basso (es. `0x0000FF00`).
-    - Un'operazione di `PUSH` farà **diminuire** il valore numerico dello `SP` (es. da `...FF08` a `...FF04`).
-    - Un'operazione di `POP` farà **aumentare** il valore dello `SP`.
+    - Un "Push" comporta una **sottrazione** dallo `SP` (es. `SUB SP, SP, #4`).
+    - Un "Pop" comporta una **addizione** allo `SP` (es. `ADD SP, SP, #4`).
 
 ### Standard AAPCS (ARM Architecture Procedure Call Standard)
 Per permettere a funzioni scritte da programmatori diversi (o dal compilatore C) di comunicare senza errori, esistono regole ferree sull'uso dei registri:
@@ -134,15 +134,20 @@ Per permettere a funzioni scritte da programmatori diversi (o dal compilatore C)
 - **Registri di Contesto (`R4`-`R11`) - "Callee-Saved":** Sono i registri di lavoro. Se una subroutine vuole usarli, **deve** prima salvarne il contenuto originale nello stack e ripristinarlo prima di terminare. Il "chiamante" ha la garanzia che, dopo la funzione, questi registri conterranno gli stessi valori di prima.
 - **Link Register (`LR`, R14):** Contiene l'indirizzo di ritorno. Se la subroutine chiama a sua volta un'altra funzione (`BL`), l'indirizzo di ritorno originale in `LR` verrebbe sovrascritto. Per questo motivo, salvare `LR` nello stack è la prima cosa da fare in subroutine non terminali ("non-leaf functions").
 
-### Le Istruzioni PUSH e POP
-ARM offre istruzioni estremamente potenti per manipolare lo stack in blocco:
+### Gestione Manuale dello Stack (Senza PUSH/POP)
+Sebbene ARM offra `PUSH` e `POP`, in ambito accademico (o per avere pieno controllo) si preferisce spesso interagire direttamente con lo `SP` tramite istruzioni di aritmetica e accesso alla memoria.
 
 ```assembly
-@ --- Esempio: Anatomia di una Subroutine che rispetta lo standard AAPCS ---
+@ --- Esempio: Anatomia di una Subroutine con gestione MANUALE dello Stack ---
 subroutine_esempio:
     @ == PROLOGO ==
-    @ Salviamo LR (per non perderlo) e i registri che useremo come "variabili locali" (R4, R5)
-    PUSH {R4, R5, LR}  
+    @ 1. Creiamo spazio nello stack (3 registri * 4 byte = 12 byte)
+    SUB SP, SP, #12         
+    
+    @ 2. Salviamo i registri manualmente negli slot creati
+    STR LR, [SP, #8]        @ Salviamo LR nell'ultimo slot
+    STR R4, [SP, #4]        @ Salviamo R4 nello slot centrale
+    STR R5, [SP, #0]        @ Salviamo R5 nel primo slot (puntato da SP)
     
     @ ...
     @ CODICE DELLA SUBROUTINE: 
@@ -150,13 +155,19 @@ subroutine_esempio:
     @ ...
 
     @ == EPILOGO ==
-    @ Ripristiniamo R4 e R5 ai valori originali del MAIN.
-    @ Invece di fare "POP {LR}" e poi "BX LR", carichiamo l'indirizzo direttamente nel PC.
-    @ Questo effettua il RITORNO AL CHIAMANTE istantaneamente.
-    POP {R4, R5, PC}
+    @ 1. Ripristiniamo i valori originali leggendoli dallo stack
+    LDR R5, [SP, #0]
+    LDR R4, [SP, #4]
+    LDR LR, [SP, #8]
+    
+    @ 2. Liberiamo lo spazio occupato riportando lo SP al valore originale
+    ADD SP, SP, #12
+    
+    @ 3. Ritorno al chiamante
+    BX LR
 ```
 
-**Nota di Sicurezza:** Lo Stack deve essere sempre **bilanciato**. Se dimentichi di estrarre un registro o se ne estrai uno di troppo, lo `SP` punterà all'indirizzo sbagliato, causando quasi certamente un crash (Segmentation Fault) quando il processore cercherà di eseguire istruzioni da un indirizzo di memoria errato.
+**Nota di Sicurezza:** Lo Stack deve essere sempre **bilanciato**. Se scendi di 12 byte nel prologo, devi risalire esattamente di 12 byte nell'epilogo. Se commetti un errore di calcolo dell'offset (es. salvando a `[SP, #2]` invece di `[SP, #4]`), corromperai i dati e il programma crasherà all'uscita della funzione.
 
 ---
 
@@ -175,4 +186,4 @@ Dichiarare un vettore inizializzato a zero con 8 elementi nulli `.word 0,0,0,0,0
 ### Esercizio #4 – La Subroutine "Sicura" che calcola il Massimo
 Implementare una subroutine `cerca_max` che prenda in input l'indirizzo base di un array grezzo in `R0` e il numero totale di elementi `N` in `R1`. 
 Tale Subroutine dovrà trovare il valore massimo presente all'interno del vettore e restituirlo in output direttamente nel registro `R0` al termine della scansione.
-Poiché la ricerca richiederà con buona probabilità l'utilizzo di specifici registri interni d'appoggio (`R4`, `R5`, ecc.), bisognerà assicurarsi di salvare e ripristinare in maniera appropriata il contesto attraverso le istruzioni protettive `PUSH` e `POP`. L'esecuzione dal codice chiamante (`_start`) dovrà avvenire con l'istruzione canonica `BL cerca_max`.
+Poiché la ricerca richiederà con buona probabilità l'utilizzo di specifici registri interni d'appoggio (`R4`, `R5`, ecc.), bisognerà assicurarsi di salvare e ripristinare in maniera appropriata il contesto attraverso la gestione manuale dello Stack (senza usare `PUSH` e `POP`). L'esecuzione dal codice chiamante (`_start`) dovrà avvenire con l'istruzione canonica `BL cerca_max`.
