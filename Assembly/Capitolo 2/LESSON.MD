@@ -111,6 +111,37 @@ Ecco come funzionano le 4 istruzioni principali con esempi visivi:
   BIC R1, R1, #0xF     ; Forza a 0 i primi 4 bit del registro R1
   ```
 
+### 2.2.1 Casi d'uso pratici degli Operatori Logici
+Per capire meglio quando usare queste istruzioni, ecco alcuni scenari classici della programmazione Assembly:
+
+1. **Controllo Parità (AND)**:
+   Per sapere se un numero è pari o dispari, basta guardare l'ultimo bit (Bit 0). Se è `1` il numero è dispari, se è `0` è pari.
+   ```assembly
+   AND R0, R1, #1      ; Isola il bit 0. Se R0=1 è dispari, se R0=0 è pari.
+   CMP R0, #0          ; Confronta con zero per impostare le flag
+   BEQ e_pari          ; Salta se il risultato è zero (pari)
+   ```
+
+2. **Allineamento Indirizzi (BIC)**:
+   A volte serve "troncare" un indirizzo di memoria per assicurarsi che sia allineato a un multiplo di 4 (fondamentale in ARM). Basta azzerare gli ultimi 2 bit.
+   ```assembly
+   BIC R0, R0, #3      ; Spegne i bit 0 e 1 (maschera #3 = binario 11)
+                       ; Un indirizzo come ...FF03 diventa ...FF00 (allineato!)
+   ```
+
+3. **Inversione Rapida (EOR)**:
+   Utile per far lampeggiare un LED o cambiare uno stato booleano (Toggle).
+   ```assembly
+   EOR R1, R1, #1      ; Se il bit era 0 diventa 1, se era 1 diventa 0.
+   ```
+
+4. **Mascheramento di Registri Hardware (ORR/BIC)**:
+   Tipico per configurare una periferica senza alterare le altre impostazioni.
+   ```assembly
+   ORR R1, R1, #(1<<4) ; Forza a 1 solo il bit in posizione 4 (accensione modulo)
+   BIC R1, R1, #(1<<7) ; Forza a 0 solo il bit in posizione 7 (disabilita interrupt)
+   ```
+
 
 ## 2.3 Quando e perché usare le istruzioni logiche e di shift
 Ma all'atto pratico, **quando dobbiamo usare queste istruzioni?** Nella programmazione ad alto livello spesso ignoriamo i singoli bit, ma in Assembly sono essenziali in questi scenari tipici:
