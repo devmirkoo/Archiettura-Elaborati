@@ -111,40 +111,52 @@ end_string:
 ---
 
 ## 4.3 Lo Stack (La Pila di Memoria) e le Convenzioni
-Man mano che le subroutine iniziano a formare catene chiamandosi a vicenda o iterando pesantemente i dati, la disponibilità sicura dei registri cala drasticamente. Cosa accade se la funzione genitore conservava un valore utile in `R4` e la subroutine appena chiamata sovrascrive quel registro durante un calcolo? Si verificherebbe un errore logico nel programma.
-Qui entra in azione la struttura temporanea essenziale detta **Stack**, gestita dal registro **`SP` (Stack Pointer, R13)**.
+Man mano che le subroutine iniziano a formare catene chiamandosi a vicenda o processando dati complessi, i 16 registri a disposizione diventano insufficienti. Lo **Stack** (o Pila) è una porzione di memoria RAM dedicata alla conservazione temporanea dei dati e del contesto del processore.
 
-Lo Stack in ARM è usualmente del tipo "Full Descending" (decrescente totale). La Pila non parte da zero, ma da indirizzi alti in RAM. Più dati vengono allocati nello stack, più questo cresce occupando gli indirizzi più bassi.
+### Il Funzionamento LIFO e lo Stack Pointer (SP)
+La gestione della memoria avviene secondo la logica **LIFO (Last-In, First-Out)**: l'ultimo dato inserito è il primo ad essere estratto. Immagina una pila di piatti: puoi aggiungere o togliere piatti solo dalla cima.
+
+Il registro **`SP` (Stack Pointer, R13)** ha il compito vitale di puntare sempre alla "cima" attuale della pila:
+- Quando salviamo un dato (**PUSH**), lo `SP` si sposta per fare spazio e il dato viene scritto.
+- Quando recuperiamo un dato (**POP**), lo `SP` legge il valore e torna indietro, liberando virtualmente lo spazio occupato.
+
+### Stack "Full Descending"
+In architettura ARM, lo stack è di tipo **Full Descending**:
+1.  **Full**: lo `SP` punta sempre all'ultimo indirizzo effettivamente occupato (non al primo libero).
+2.  **Descending**: lo stack cresce verso l'alto... ma negli indirizzi! In termini fisici, la pila parte da un indirizzo "alto" (es. `0x0000FFFF`) e cresce verso il basso (es. `0x0000FF00`).
+    - Un'operazione di `PUSH` farà **diminuire** il valore numerico dello `SP` (es. da `...FF08` a `...FF04`).
+    - Un'operazione di `POP` farà **aumentare** il valore dello `SP`.
 
 ### Standard AAPCS (ARM Architecture Procedure Call Standard)
-Nell'intera industria di manipolazione di basso livello ARM vigono precise convenzioni per rendere le Subroutine prevedibilmente rispettose per il chiamante:
-- **`R0` - `R3` (Parametri, "Caller-Saved"):** Servono alla burocrazia logica di Passaggio-Ritrazione dei dati per i return value (output in R0). Una funzione chiamata può sovrascriverli deliberatamente. Sono usa e getta.
-- **`R4` - `R11` (Contesto Protetto, "Callee-Saved"):** Sono strettamente registri di lavoro interno duraturi. Se la Subroutine ha brama di usarli `R4` ecc., cade su di essa l'OBBLIGO perentorio di nascondere i vecchi valori nello stack mediante Backup primitivo e successivamente recuperarli (Restore) a fine riga prima del ritorno.
-- **`LR` (Link Register - R14):** Se dentro la tua Subroutine A farai una `BL` per chiamare una Subroutine B intertestuale... scordati di tornare indietro nello Main! La chiamata incapsulata perderà permanentemente la scia stracciando l'LR con l'ultima firma logica. Il rimedio? Occorre salvare tempestivamente il LR sullo lo stack insieme ai registri!
+Per permettere a funzioni scritte da programmatori diversi (o dal compilatore C) di comunicare senza errori, esistono regole ferree sull'uso dei registri:
 
-### Istruzioni PUSH e POP
-L'architettura ARM permette di salvare (PUSH) o ripristinare (POP) liste multiple di registri sullo stack con una singola istruzione compatta.
+- **Registri Scratch (`R0`-`R3`) - "Caller-Saved":** Sono i registri usati per passare parametri alle funzioni. La subroutine chiamata è libera di modificarli. Se il "chiamante" ha bisogno di conservare i valori in `R0-R3` dopo la chiamata, deve salvarli lui stesso nello stack prima di invocare la funzione.
+- **Registri di Contesto (`R4`-`R11`) - "Callee-Saved":** Sono i registri di lavoro. Se una subroutine vuole usarli, **deve** prima salvarne il contenuto originale nello stack e ripristinarlo prima di terminare. Il "chiamante" ha la garanzia che, dopo la funzione, questi registri conterranno gli stessi valori di prima.
+- **Link Register (`LR`, R14):** Contiene l'indirizzo di ritorno. Se la subroutine chiama a sua volta un'altra funzione (`BL`), l'indirizzo di ritorno originale in `LR` verrebbe sovrascritto. Per questo motivo, salvare `LR` nello stack è la prima cosa da fare in subroutine non terminali ("non-leaf functions").
+
+### Le Istruzioni PUSH e POP
+ARM offre istruzioni estremamente potenti per manipolare lo stack in blocco:
 
 ```assembly
 @ --- Esempio: Anatomia di una Subroutine che rispetta lo standard AAPCS ---
-elabora_complesso:
+subroutine_esempio:
     @ == PROLOGO ==
-    @ Backup dei registri callee-saved e del registro di Link (LR) nello stack
-    PUSH {R4, R5, R6, LR}  
+    @ Salviamo LR (per non perderlo) e i registri che useremo come "variabili locali" (R4, R5)
+    PUSH {R4, R5, LR}  
     
     @ ...
-    @ CODICE SUBROUTINE: R4, R5, R6 possono essere usati liberamente.
+    @ CODICE DELLA SUBROUTINE: 
+    @ Qui possiamo usare R4 e R5 liberamente per i calcoli.
     @ ...
 
     @ == EPILOGO ==
-    @ Ripristiniamo i valori di R4, R5, R6 per ridarli integri al chiamante.
-    @ OTTIMIZZAZIONE ARM: invece di copiare l'indirizzo salvato in LR e poi eseguire "BX LR",
-    @ noi trasferiamo l'indirizzo di rientro DIRETTAMENTE NEL Program Counter (PC).
-    @ Questo permette di risalire lo stack e ritornare al chiamante in un colpo solo!
-    POP {R4, R5, R6, PC}
+    @ Ripristiniamo R4 e R5 ai valori originali del MAIN.
+    @ Invece di fare "POP {LR}" e poi "BX LR", carichiamo l'indirizzo direttamente nel PC.
+    @ Questo effettua il RITORNO AL CHIAMANTE istantaneamente.
+    POP {R4, R5, PC}
 ```
 
-**La Regola Fondamentale:** Se salvi N elementi con la `PUSH`, devi sempre ripristinarne esattamente N al momento della `POP`. Sbagliare il numero di registri nello stack corrompe il valore del PC al rientro (provocando `SegFault / Memory Corruption`).
+**Nota di Sicurezza:** Lo Stack deve essere sempre **bilanciato**. Se dimentichi di estrarre un registro o se ne estrai uno di troppo, lo `SP` punterà all'indirizzo sbagliato, causando quasi certamente un crash (Segmentation Fault) quando il processore cercherà di eseguire istruzioni da un indirizzo di memoria errato.
 
 ---
 
