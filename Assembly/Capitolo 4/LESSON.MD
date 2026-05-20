@@ -22,6 +22,15 @@ Per inizializzare un vettore (array) all'interno del programma, si utilizza la c
         .space 40                  @ Alloco "a vuoto" 40 byte di zeri. Equivale ad un array di 10 interi! (10 * 4 byte)
 ```
 
+### 4.1.1 Indice vs Offset: La distinzione fondamentale
+Spesso i termini vengono usati come sinonimi, ma in Assembly hanno scopi diversi:
+
+*   **L'Indice ($i$):** È un concetto **logico**. Rappresenta la posizione dell'elemento nel vettore (0°, 1°, 2°...). È il numero che useresti in un ciclo `for (int i=0; i<N; i++)`. In ARM, l'indice solitamente risiede in un registro (es. `R2`) che viene incrementato di 1 ad ogni iterazione.
+*   **L'Offset:** È un concetto **fisico**. Rappresenta il numero di **byte** di distanza dall'inizio del vettore. Poiché ogni `.word` occupa 4 byte, l'offset non avanza di uno in uno, ma di quattro in quattro.
+
+**La formula magica:**
+$$\text{Offset} = \text{Indice} \times \text{Dimensione Elemento (4 byte per .word)}$$
+
 ### Modalità di Indirizzamento (Addressing)
 Per "scorrere" un vettore, ARM offre delle tecniche di calcolo rapido degli indirizzi incluse organicamente nei comandi Load/Store (`LDR` / `STR`). Le più usate nei cicli sono tre:
 
@@ -33,11 +42,19 @@ Per "scorrere" un vettore, ARM offre delle tecniche di calcolo rapido degli indi
    ```assembly
    LDR R0, [R1], #4     @ Legge in R0 il valore all'indirizzo corrente R1. DOPO averletto, assegna R1 = R1 + 4.
    ```
-3. **Register Offset con Shift:** Utilizza un altro registro come Indice (es. la tipica variabile `i` di un ciclo for classico `V[i]`) e calcola lo scostamento fisico moltiplicando questo indice per 4 usando lo shift.
+3. **Register Offset con Shift:** È il metodo più simile ai linguaggi di alto livello (`vettore[i]`). Utilizza un registro come **Indice logico** (es. `R2`) e lascia che l'hardware calcoli l'**Offset fisico** in tempo reale moltiplicando per 4 tramite lo shift.
    ```assembly
-   @ Se R1 è l'indirizzo base e R2 è l'indice i (0, 1, 2...)
-   LDR R0, [R1, R2, LSL #2]  @ Indirizzo effettivo letto = R1 + (R2 * 4). (Non altera R1 e R2 permanentemente!)
+   @ Ipotizziamo: R1 = Indirizzo base, R2 = Indice logico (0, 1, 2...)
+   LDR R0, [R1, R2, LSL #2]  
+   
+   @ Cosa succede dietro le quinte?
+   @ 1. Prende l'indice in R2
+   @ 2. Lo shifta a sinistra di 2 (LSL #2), che equivale a moltiplicare per 4.
+   @    Ora ha ottenuto l'OFFSET.
+   @ 3. Somma l'OFFSET all'indirizzo base R1.
+   @ 4. Legge il valore risultante in R0.
    ```
+   *Vantaggio:* Non devi modificare manualmente l'indirizzo base `R1`. Puoi accedere a qualsiasi elemento `i` saltando direttamente alla posizione corretta.
 
 **Nota Operativa: L'Inganno della Parità (Indici vs Valori):** 
 Nei test universitari viene spesso chiesto di operare sui vettori valutando la parità in due accezioni diverse che non vanno confuse:
